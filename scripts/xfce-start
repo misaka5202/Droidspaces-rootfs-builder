@@ -1,118 +1,15 @@
-#!/bin/sh
-set -eu
+#!/bin/bash
+# Start XFCE on Termux:X11 (DISPLAY=:5)
+set -e
 
-ENV_FILE=/run/droidspaces.env
-CONFIG=/run/droidspaces/container.config
+export DISPLAY="${DISPLAY:-:5}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/0}"
+mkdir -p "$XDG_RUNTIME_DIR"
+chmod 700 "$XDG_RUNTIME_DIR" || true
 
-# Load environment overrides from the env file if present.
-if [ -f "$ENV_FILE" ]; then
-    set -a
-    . "$ENV_FILE"
-    set +a
-fi
-
-# Default the X11 display.
-: "${DISPLAY:=:5}"
-export DISPLAY
-
-# Enable PulseAudio and VirGL based on container config.
-PULSE_ENABLED=0
-VIRGL_ENABLED=0
-if grep -q 'enable_pulseaudio=1' "$CONFIG" 2>/dev/null; then
-    PULSE_ENABLED=1
-    : "${PULSE_SERVER:=unix:/tmp/.pulse-socket}"
-    export PULSE_SERVER
-fi
-if grep -q 'enable_virgl=1' "$CONFIG" 2>/dev/null; then
-    VIRGL_ENABLED=1
-    : "${GALLIUM_DRIVER:=virpipe}"
-    export GALLIUM_DRIVER
-fi
-
-# Derive the X11 socket and lock paths from the display number,
-# ignoring any host prefix and screen suffix.
-DISPLAY_NUM=$(printf '%s' "$DISPLAY" | sed 's/^.*://; s/\..*$//')
-X11_SOCKET="/tmp/.X11-unix/X${DISPLAY_NUM}"
-X11_LOCK="/tmp/.X${DISPLAY_NUM}-lock"
-
-# Chown a path if it exists, acting on the link itself rather than its target.
-safe_chown() {
-    if [ -e "$2" ] || [ -L "$2" ]; then
-        chown -h "$1" "$2"
-    fi
-}
-
-# Run the desktop as a non-root user when one is configured.
-if [ -n "${XFCE_USER:-}" ] && [ "$XFCE_USER" != "root" ]; then
-    if ! USER_UID=$(id -u "$XFCE_USER" 2>/dev/null); then
-        echo "Error: XFCE_USER '$XFCE_USER' does not exist" >&2
-        exit 1
-    fi
-
-    if ! USER_GID=$(id -g "$XFCE_USER" 2>/dev/null); then
-        echo "Error: cannot resolve GID for '$XFCE_USER'" >&2
-        exit 1
-    fi
-
-    OWNER="$USER_UID:$USER_GID"
-    TARGET_XDG="/run/user/$USER_UID"
-
-    # Create the user's private XDG runtime directory.
-    mkdir -p "$TARGET_XDG"
-    chown "$OWNER" "$TARGET_XDG"
-    chmod 700 "$TARGET_XDG"
-
-    # Hand the X11 socket and lock to the user.
-    safe_chown "$OWNER" "$X11_SOCKET"
-    safe_chown "$OWNER" "$X11_LOCK"
-
-    # Hand over optional service sockets only when enabled.
-    if [ "$PULSE_ENABLED" -eq 1 ]; then
-        safe_chown "$OWNER" /tmp/.pulse-socket
-    fi
-    if [ "$VIRGL_ENABLED" -eq 1 ]; then
-        safe_chown "$OWNER" /tmp/.virgl_test
-    fi
-
-    # Collect forwardable env var names, excluding system/login variables.
-    SAFE_ENV=$(env | awk -F= '{print $1}' \
-        | grep -E '^[a-zA-Z_][a-zA-Z0-9_]*$' \
-        | grep -vE '^(HOME|USER|LOGNAME|PWD|SHELL|XDG_RUNTIME_DIR|MAIL|SHLVL|_)$' \
-        | tr '\n' ',' | sed 's/,$//')
-
-    # Prefer util-linux su, which can whitelist the environment with -w.
-    if { su --help 2>&1 || true; } | grep -Eq -- '(^|[[:space:]])(-w|--whitelist-environment)([[:space:]]|,|$)'; then
-        if [ -n "$SAFE_ENV" ]; then
-            exec su -w "$SAFE_ENV" "$XFCE_USER" -c \
-                "export XDG_RUNTIME_DIR='$TARGET_XDG'; exec /usr/bin/startxfce4"
-        else
-            exec su "$XFCE_USER" -c \
-                "export XDG_RUNTIME_DIR='$TARGET_XDG'; exec /usr/bin/startxfce4"
-        fi
-    fi
-
-    # BusyBox/Alpine su lacks -w: rebuild the safe env as quoted exports.
-    EXPORTS="export XDG_RUNTIME_DIR='$TARGET_XDG';"
-    OLD_IFS=$IFS
-    IFS=,
-    for var in ${SAFE_ENV:-}; do
-        [ -z "$var" ] && continue
-        val=$(printenv "$var" || true)
-        esc=$(printf '%s' "$val" | sed "s/'/'\\\\''/g")
-        EXPORTS="$EXPORTS export $var='$esc';"
-    done
-    IFS=$OLD_IFS
-    exec su "$XFCE_USER" -c "$EXPORTS exec /usr/bin/startxfce4"
-fi
-
-# No usable non-root user: run the desktop as root.
-if [ "${XFCE_USER:-}" = "root" ]; then
-    echo "Warning: XFCE_USER=root, running desktop as root" >&2
+# Prefer dbus-launch so session services work in the container
+if command -v dbus-launch >/dev/null 2>&1; then
+  exec dbus-launch --exit-with-session startxfce4
 else
-    echo "Warning: XFCE_USER is unset or empty, falling back to root" >&2
+  exec startxfce4
 fi
-
-mkdir -p /run/user/0
-chmod 700 /run/user/0
-export XDG_RUNTIME_DIR=/run/user/0
-exec /usr/bin/startxfce4
