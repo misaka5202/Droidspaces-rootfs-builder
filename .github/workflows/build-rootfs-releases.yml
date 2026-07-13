@@ -155,6 +155,8 @@ jobs:
           fi
 
       - name: Build RootFS (${{ matrix.template }})
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           chmod +x build_rootfs-native.sh
           ./build_rootfs-native.sh \
