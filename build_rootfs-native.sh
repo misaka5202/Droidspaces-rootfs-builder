@@ -108,6 +108,7 @@ docker buildx build \
   --build-arg ENABLE_tmoe_ARG="$ENABLE_tmoe" \
   --build-arg ENABLE_nosnap_ARG="$ENABLE_nosnap" \
   --build-arg USERNAME="$USERNAME" \
+  --build-arg GITHUB_TOKEN="${GITHUB_TOKEN:-}" \
   -f "$DOCKERFILE" \
   .
 
