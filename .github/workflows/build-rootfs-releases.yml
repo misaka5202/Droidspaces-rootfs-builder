@@ -28,8 +28,16 @@ jobs:
       - name: Find Build Templates
         id: find-templates
         run: |
-          # Find all *.Dockerfile files, extract names, and format as JSON array
-          TEMPLATES=$(ls *.Dockerfile | sed 's/\.Dockerfile//' | jq -R -s -c 'split("\n")[:-1]')
+          # 自动扫描仓库根目录下所有 *.Dockerfile 文件，取出不含后缀的文件名作为模板名
+          # 例如 Ubuntu-22_04-XFCE-TermuxX11.Dockerfile -> Ubuntu-22_04-XFCE-TermuxX11
+          # 这里不依赖具体文件名，新增/重命名 Dockerfile 无需修改本工作流
+          shopt -s nullglob
+          FILES=(*.Dockerfile)
+          if [ ${#FILES[@]} -eq 0 ]; then
+            echo "::error::未在仓库根目录找到任何 *.Dockerfile 文件"
+            exit 1
+          fi
+          TEMPLATES=$(printf '%s\n' "${FILES[@]}" | sed 's/\.Dockerfile$//' | sort | jq -R -s -c 'split("\n")[:-1]')
           echo "templates=$TEMPLATES" >> $GITHUB_OUTPUT
           echo "Detected templates: $TEMPLATES"
 
@@ -58,6 +66,9 @@ jobs:
         run: |
           chmod +x build_rootfs-native.sh
           # Native build without QEMU overhead
+          # 各模板（含新的 Ubuntu-22_04-XFCE-TermuxX11）的可选功能开关（PulseAudio、中文、
+          # Fcitx5、Snapdragon GPU 等）均在对应 Dockerfile 内以 ARG ... = 默认值 的形式提供，
+          # 未在此显式传入 --build-arg 时按 Dockerfile 内置默认值构建。
           ./build_rootfs-native.sh -i "${{ matrix.template }}.Dockerfile" -v "${{ needs.setup.outputs.build_id }}"
 
       - name: Upload Build Artifact
@@ -129,7 +140,7 @@ jobs:
             Automated Droidspaces RootFS Multi-Build
             Built on: ${{ needs.setup.outputs.build_date }}
             Build ID: ${{ needs.setup.outputs.build_id }}
-            
+
             Included Templates:
             ${{ join(fromJson(needs.setup.outputs.templates), ', ') }}
           draft: false
