@@ -15,7 +15,7 @@ ARG ENABLE_docker_ARG
 ARG ENABLE_srf_ARG
 ARG ENABLE_tmoe_ARG
 ARG ENABLE_nosnap_ARG
-ARG USERNAME
+ARG USERNAME=Gold
 ######################################################
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -122,20 +122,17 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# 强制配置使用 iptables-legacy（Android 内核兼容；部分镜像未注册 alternatives，需手动补齐）
+# 强制使用 iptables-legacy（Android 内核兼容；不依赖已注册的 alternatives）
 RUN apt-get update && \
     apt-get install -y --no-install-recommends iptables && \
-    if [ ! -x /usr/sbin/iptables-legacy ] || [ ! -x /usr/sbin/ip6tables-legacy ]; then \
-        echo "iptables-legacy binaries missing"; exit 1; \
-    fi && \
-    update-alternatives --install /usr/sbin/iptables iptables /usr/sbin/iptables-legacy 100 \
-        --slave /usr/sbin/iptables-restore iptables-restore /usr/sbin/iptables-legacy-restore \
-        --slave /usr/sbin/iptables-save iptables-save /usr/sbin/iptables-legacy-save && \
-    update-alternatives --install /usr/sbin/ip6tables ip6tables /usr/sbin/ip6tables-legacy 100 \
-        --slave /usr/sbin/ip6tables-restore ip6tables-restore /usr/sbin/ip6tables-legacy-restore \
-        --slave /usr/sbin/ip6tables-save ip6tables-save /usr/sbin/ip6tables-legacy-save && \
-    update-alternatives --set iptables /usr/sbin/iptables-legacy && \
-    update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy && \
+    test -x /usr/sbin/iptables-legacy && test -x /usr/sbin/ip6tables-legacy && \
+    ln -sfn /usr/sbin/iptables-legacy /usr/sbin/iptables && \
+    ln -sfn /usr/sbin/iptables-legacy-restore /usr/sbin/iptables-restore && \
+    ln -sfn /usr/sbin/iptables-legacy-save /usr/sbin/iptables-save && \
+    ln -sfn /usr/sbin/ip6tables-legacy /usr/sbin/ip6tables && \
+    ln -sfn /usr/sbin/ip6tables-legacy-restore /usr/sbin/ip6tables-restore && \
+    ln -sfn /usr/sbin/ip6tables-legacy-save /usr/sbin/ip6tables-save && \
+    iptables --version && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 RUN sed -i '/en_US.UTF-8/s/^# //' /etc/locale.gen && \
@@ -143,22 +140,28 @@ RUN sed -i '/en_US.UTF-8/s/^# //' /etc/locale.gen && \
         export DEBIAN_FRONTEND=noninteractive && \
         ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
         echo "Asia/Shanghai" > /etc/timezone && \
-        dpkg-reconfigure -f noninteractive tzdata && \
+        dpkg-reconfigure -f noninteractive tzdata || true && \
         sed -i '/zh_CN.UTF-8/s/^# //' /etc/locale.gen && \
         locale-gen && \
-        update-locale LANG=zh_CN.UTF-8 LC_ALL=zh_CN.UTF-8; \
+        update-locale LANG=zh_CN.UTF-8 LC_ALL=zh_CN.UTF-8 || \
+        printf '%s\n' 'LANG=zh_CN.UTF-8' 'LC_ALL=zh_CN.UTF-8' > /etc/default/locale; \
     else \
         locale-gen && \
-        update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8; \
+        update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 || \
+        printf '%s\n' 'LANG=en_US.UTF-8' 'LC_ALL=en_US.UTF-8' > /etc/default/locale; \
     fi && \
-    # 配置 SSH 服务（禁用 root 密码登录，但允许常规密码认证）
+    # 配置 SSH（构建期无 systemd，用 wants 软链代替 systemctl enable）
     mkdir -p /var/run/sshd && \
     sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config && \
     sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
-    # 如果容器内存在默认的 ubuntu 用户，则将其连同家目录一起删除
+    mkdir -p /etc/systemd/system/multi-user.target.wants && \
+    ln -sf /lib/systemd/system/ssh.service /etc/systemd/system/multi-user.target.wants/ssh.service && \
+    # 删除默认 ubuntu 用户（若存在），再创建业务用户
     deluser --remove-home ubuntu || true && \
-    useradd -m -s /bin/bash ${USERNAME} && echo "${USERNAME}:1234" | chpasswd && \
-    systemctl enable ssh
+    if ! id -u "${USERNAME}" >/dev/null 2>&1; then \
+        useradd -m -s /bin/bash "${USERNAME}"; \
+    fi && \
+    echo "${USERNAME}:1234" | chpasswd
 
 # Termux:X11 — DISPLAY 默认 :5
 RUN cat <<'EOF' > /etc/environment
