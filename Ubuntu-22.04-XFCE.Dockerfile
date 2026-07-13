@@ -122,9 +122,21 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# 强制配置使用 iptables-legacy（这是兼容 Android 内核的硬性要求）
-RUN update-alternatives --set iptables /usr/sbin/iptables-legacy && \
-    update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy
+# 强制配置使用 iptables-legacy（Android 内核兼容；部分镜像未注册 alternatives，需手动补齐）
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends iptables && \
+    if [ ! -x /usr/sbin/iptables-legacy ] || [ ! -x /usr/sbin/ip6tables-legacy ]; then \
+        echo "iptables-legacy binaries missing"; exit 1; \
+    fi && \
+    update-alternatives --install /usr/sbin/iptables iptables /usr/sbin/iptables-legacy 100 \
+        --slave /usr/sbin/iptables-restore iptables-restore /usr/sbin/iptables-legacy-restore \
+        --slave /usr/sbin/iptables-save iptables-save /usr/sbin/iptables-legacy-save && \
+    update-alternatives --install /usr/sbin/ip6tables ip6tables /usr/sbin/ip6tables-legacy 100 \
+        --slave /usr/sbin/ip6tables-restore ip6tables-restore /usr/sbin/ip6tables-legacy-restore \
+        --slave /usr/sbin/ip6tables-save ip6tables-save /usr/sbin/ip6tables-legacy-save && \
+    update-alternatives --set iptables /usr/sbin/iptables-legacy && \
+    update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
 RUN sed -i '/en_US.UTF-8/s/^# //' /etc/locale.gen && \
     if [ "$ENABLE_zh_tz_ARG" = "true" ]; then \
