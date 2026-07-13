@@ -135,7 +135,12 @@ RUN apt-get update && \
     iptables --version && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-RUN sed -i '/en_US.UTF-8/s/^# //' /etc/locale.gen && \
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends locales tzdata && \
+    if [ ! -f /etc/locale.gen ]; then \
+        printf '%s\n' 'en_US.UTF-8 UTF-8' 'zh_CN.UTF-8 UTF-8' > /etc/locale.gen; \
+    fi && \
+    sed -i '/en_US.UTF-8/s/^# //' /etc/locale.gen && \
     if [ "$ENABLE_zh_tz_ARG" = "true" ]; then \
         export DEBIAN_FRONTEND=noninteractive && \
         ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
@@ -150,6 +155,7 @@ RUN sed -i '/en_US.UTF-8/s/^# //' /etc/locale.gen && \
         update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 || \
         printf '%s\n' 'LANG=en_US.UTF-8' 'LC_ALL=en_US.UTF-8' > /etc/default/locale; \
     fi && \
+    apt-get clean && rm -rf /var/lib/apt/lists/* && \
     # 配置 SSH（构建期无 systemd，用 wants 软链代替 systemctl enable）
     mkdir -p /var/run/sshd && \
     sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config && \
