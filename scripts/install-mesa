@@ -1,6 +1,7 @@
 #!/bin/bash
 # Install mesa-for-android-container (Adreno / Snapdragon) into the rootfs.
 # Ubuntu 22.04 (jammy) has no official package; fall back to noble tarball.
+# No jq required — parse GitHub API JSON with grep.
 set -euo pipefail
 
 REPO="lfdevs/mesa-for-android-container"
@@ -12,14 +13,18 @@ fi
 
 echo "--> [mesa] resolving download URL..."
 
+# Extract first browser_download_url whose filename matches the given arch suffix.
 pick_url() {
   local json="$1"
   local suffix="$2"
-  echo "$json" | jq -r --arg s "$suffix" '
-    (.. | objects | select(has("browser_download_url") and has("name"))
-      | select(.name | test("mesa-for-android-container_.*_" + $s + "\\.tar\\.gz$"))
-      | .browser_download_url) // empty
-  ' | awk 'NF{print; exit}'
+  printf '%s' "$json" \
+    | grep -oE "https://[^\"]+/mesa-for-android-container_[^\"]*_${suffix}\\.tar\\.gz" \
+    | head -1
+}
+
+has_assets() {
+  local json="$1"
+  [ -n "$json" ] && printf '%s' "$json" | grep -q 'browser_download_url'
 }
 
 URL=""
@@ -27,7 +32,7 @@ LATEST=""
 LIST=""
 
 LATEST=$(curl -fsSL "${AUTH_HEADER[@]}" "${API}/releases/latest" 2>/dev/null || true)
-if [ -n "$LATEST" ] && echo "$LATEST" | jq -e '.assets? | length > 0' >/dev/null 2>&1; then
+if has_assets "$LATEST"; then
   URL=$(pick_url "$LATEST" "ubuntu_jammy_arm64")
   if [ -z "$URL" ]; then
     URL=$(pick_url "$LATEST" "ubuntu_noble_arm64")
@@ -37,7 +42,7 @@ fi
 if [ -z "$URL" ]; then
   echo "--> [mesa] scanning recent releases..."
   LIST=$(curl -fsSL "${AUTH_HEADER[@]}" "${API}/releases?per_page=30" 2>/dev/null || true)
-  if [ -n "$LIST" ]; then
+  if has_assets "$LIST"; then
     URL=$(pick_url "$LIST" "ubuntu_jammy_arm64")
     if [ -z "$URL" ]; then
       URL=$(pick_url "$LIST" "ubuntu_noble_arm64")
