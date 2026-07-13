@@ -7,7 +7,89 @@ on:
   workflow_dispatch:
     inputs:
       update_json_only:
-        description: 'Only update rootfs.json (skip build & release)'
+        description: '仅更新 rootfs.json（跳过构建与发布）'
+        type: boolean
+        default: false
+      build_target:
+        description: '选择要构建的发行版模板'
+        required: true
+        type: choice
+        default: 'Ubuntu-22.04-XFCE'
+        options:
+          - 'Ubuntu-22.04-XFCE'
+          - 'Ubuntu-24-KDE'
+          - 'Ubuntu-24.04-XFCE'
+          - 'Ubuntu-22.04-Minimal'
+          - 'all'
+      build_nixos:
+        description: '同时构建 NixOS 变体'
+        type: boolean
+        default: false
+      custom_username:
+        description: '自定义用户名（默认 Gold）'
+        required: false
+        type: string
+        default: 'Gold'
+      build_desktop:
+        description: '桌面规模（XFCE/KDE：conc=精简 min=最小 none=不装桌面；其它模板忽略）'
+        required: true
+        type: choice
+        default: 'min'
+        options:
+          - 'conc'
+          - 'min'
+          - 'none'
+      build_desktop_plus:
+        description: '桌面开机自启动（需桌面选 conc 或 min；Termux:X11 DISPLAY=:5）'
+        type: boolean
+        default: false
+      PulseAudio:
+        description: 'PulseAudio 音频转发'
+        required: true
+        type: choice
+        default: 'socket'
+        options:
+          - 'socket'
+          - 'tcp'
+          - 'none'
+      enable_zh_tz:
+        description: '中文语言 + Asia/Shanghai 时区'
+        type: boolean
+        default: true
+      enable_srf:
+        description: '安装 Fcitx5 输入法（中文开启时额外装中文输入支持）'
+        type: boolean
+        default: true
+      enable_mesa:
+        description: '高通骁龙 GPU（mesa-for-android-container）'
+        type: boolean
+        default: true
+      enable_yj:
+        description: '容器 NAT / 硬件与网络识别增强'
+        type: boolean
+        default: true
+      enable_binfmt:
+        description: '跨架构支持（qemu-user-static / binfmt）'
+        type: boolean
+        default: false
+      enable_kfgj:
+        description: '集成开发工具'
+        type: boolean
+        default: false
+      enable_zip:
+        description: '集成压缩工具'
+        type: boolean
+        default: true
+      enable_docker:
+        description: '集成 Docker'
+        type: boolean
+        default: false
+      enable_tmoe:
+        description: '集成 TMOE'
+        type: boolean
+        default: false
+      enable_nosnap:
+        description: 'nosnap：移除 Ubuntu Snap'
         type: boolean
         default: false
   schedule:
@@ -21,25 +103,35 @@ jobs:
       templates: ${{ steps.find-templates.outputs.templates }}
       build_id: ${{ steps.prep.outputs.build_id }}
       build_date: ${{ steps.prep.outputs.build_date }}
+      build_nixos: ${{ steps.find-templates.outputs.build_nixos }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Find Build Templates
+      - name: Parse build target
         id: find-templates
         run: |
-          # 自动扫描仓库根目录下所有 *.Dockerfile 文件，取出不含后缀的文件名作为模板名
-          # 例如 Ubuntu-22_04-XFCE-TermuxX11.Dockerfile -> Ubuntu-22_04-XFCE-TermuxX11
-          # 这里不依赖具体文件名，新增/重命名 Dockerfile 无需修改本工作流
-          shopt -s nullglob
-          FILES=(*.Dockerfile)
-          if [ ${#FILES[@]} -eq 0 ]; then
-            echo "::error::未在仓库根目录找到任何 *.Dockerfile 文件"
-            exit 1
+          TARGET="${{ github.event.inputs.build_target || 'all' }}"
+          BUILD_NIXOS="${{ github.event.inputs.build_nixos || 'false' }}"
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
+            TARGET="all"
+            BUILD_NIXOS="true"
           fi
-          TEMPLATES=$(printf '%s\n' "${FILES[@]}" | sed 's/\.Dockerfile$//' | sort | jq -R -s -c 'split("\n")[:-1]')
+
+          if [ "$TARGET" = "all" ] || [ -z "$TARGET" ]; then
+            TEMPLATES=$(ls *.Dockerfile | sed 's/\.Dockerfile//' | jq -R -s -c 'split("\n")[:-1]')
+          else
+            if [ ! -f "${TARGET}.Dockerfile" ]; then
+              echo "❌ 找不到模板: ${TARGET}.Dockerfile"
+              exit 1
+            fi
+            TEMPLATES=$(jq -n -c --arg t "$TARGET" '[$t]')
+          fi
+
           echo "templates=$TEMPLATES" >> $GITHUB_OUTPUT
-          echo "Detected templates: $TEMPLATES"
+          echo "build_nixos=$BUILD_NIXOS" >> $GITHUB_OUTPUT
+          echo "构建矩阵: $TEMPLATES"
+          echo "构建 NixOS: $BUILD_NIXOS"
 
       - name: Prepare Build Metadata
         id: prep
@@ -51,7 +143,7 @@ jobs:
           echo "Build ID: $BUILD_ID"
 
   build:
-    if: ${{ github.event.inputs.update_json_only != 'true' }}
+    if: ${{ github.event.inputs.update_json_only != 'true' && needs.setup.outputs.templates != '[]' }}
     needs: setup
     runs-on: ubuntu-24.04-arm
     strategy:
@@ -62,14 +154,35 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      - name: Verify build options
+        run: |
+          DESKTOP="${{ github.event.inputs.build_desktop || 'min' }}"
+          DESKTOP_PLUS="${{ github.event.inputs.build_desktop_plus || 'false' }}"
+          if [ "$DESKTOP" = "none" ] && [ "$DESKTOP_PLUS" = "true" ]; then
+            echo "❌ 错误: 桌面选 none 时不能启用开机自启动"
+            exit 1
+          fi
+
       - name: Build RootFS (${{ matrix.template }})
         run: |
           chmod +x build_rootfs-native.sh
-          # Native build without QEMU overhead
-          # 各模板（含新的 Ubuntu-22_04-XFCE-TermuxX11）的可选功能开关（PulseAudio、中文、
-          # Fcitx5、Snapdragon GPU 等）均在对应 Dockerfile 内以 ARG ... = 默认值 的形式提供，
-          # 未在此显式传入 --build-arg 时按 Dockerfile 内置默认值构建。
-          ./build_rootfs-native.sh -i "${{ matrix.template }}.Dockerfile" -v "${{ needs.setup.outputs.build_id }}"
+          ./build_rootfs-native.sh \
+            -i "${{ matrix.template }}.Dockerfile" \
+            -v "${{ needs.setup.outputs.build_id }}" \
+            -K "${{ github.event.inputs.build_desktop || 'min' }}" \
+            -L "${{ github.event.inputs.build_desktop_plus || 'false' }}" \
+            -P "${{ github.event.inputs.PulseAudio || 'socket' }}" \
+            -g "${{ github.event.inputs.enable_zh_tz || 'true' }}" \
+            -a "${{ github.event.inputs.enable_binfmt || 'false' }}" \
+            -b "${{ github.event.inputs.enable_yj || 'true' }}" \
+            -c "${{ github.event.inputs.enable_mesa || 'true' }}" \
+            -d "${{ github.event.inputs.enable_kfgj || 'false' }}" \
+            -e "${{ github.event.inputs.enable_zip || 'true' }}" \
+            -f "${{ github.event.inputs.enable_docker || 'false' }}" \
+            -h "${{ github.event.inputs.enable_srf || 'true' }}" \
+            -j "${{ github.event.inputs.enable_tmoe || 'false' }}" \
+            -n "${{ github.event.inputs.enable_nosnap || 'false' }}" \
+            -u "${{ github.event.inputs.custom_username || 'Gold' }}"
 
       - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
@@ -79,7 +192,7 @@ jobs:
           retention-days: 1
 
   build-nixos:
-    if: ${{ github.event.inputs.update_json_only != 'true' }}
+    if: ${{ github.event.inputs.update_json_only != 'true' && (needs.setup.outputs.build_nixos == 'true' || github.event_name != 'workflow_dispatch') }}
     needs: setup
     runs-on: ubuntu-24.04-arm
     strategy:
@@ -115,7 +228,8 @@ jobs:
           retention-days: 1
 
   release:
-    if: ${{ github.event.inputs.update_json_only != 'true' }}
+    # build-nixos 在手动构建取消勾选时可跳过，此时仍应发布已有产物
+    if: ${{ always() && !cancelled() && github.event.inputs.update_json_only != 'true' && needs.setup.result == 'success' && needs.build.result == 'success' && (needs.build-nixos.result == 'success' || needs.build-nixos.result == 'skipped') }}
     needs: [setup, build, build-nixos]
     runs-on: ubuntu-latest
     permissions:
@@ -137,9 +251,27 @@ jobs:
           name: "Droidspaces RootFS ${{ needs.setup.outputs.build_id }}"
           files: "*.tar.xz"
           body: |
-            Automated Droidspaces RootFS Multi-Build
-            Built on: ${{ needs.setup.outputs.build_date }}
+            Droidspaces RootFS 自动构建
+            构建时间: ${{ needs.setup.outputs.build_date }}
+            构建目标: ${{ github.event.inputs.build_target || 'all' }}
             Build ID: ${{ needs.setup.outputs.build_id }}
+
+            构建选项:
+            - 自定义用户名: ${{ github.event.inputs.custom_username || 'Gold' }}
+            - 桌面规模: ${{ github.event.inputs.build_desktop || 'min' }}
+            - 桌面开机自启动: ${{ github.event.inputs.build_desktop_plus || 'false' }}
+            - PulseAudio: ${{ github.event.inputs.PulseAudio || 'socket' }}
+            - 中文语言/时区: ${{ github.event.inputs.enable_zh_tz || 'true' }}
+            - Fcitx5: ${{ github.event.inputs.enable_srf || 'true' }}
+            - 骁龙 GPU: ${{ github.event.inputs.enable_mesa || 'true' }}
+            - NAT/硬件识别: ${{ github.event.inputs.enable_yj || 'true' }}
+            - 跨架构 binfmt: ${{ github.event.inputs.enable_binfmt || 'false' }}
+            - 开发工具: ${{ github.event.inputs.enable_kfgj || 'false' }}
+            - 压缩工具: ${{ github.event.inputs.enable_zip || 'true' }}
+            - Docker: ${{ github.event.inputs.enable_docker || 'false' }}
+            - TMOE: ${{ github.event.inputs.enable_tmoe || 'false' }}
+            - nosnap: ${{ github.event.inputs.enable_nosnap || 'false' }}
+            - NixOS 变体: ${{ needs.setup.outputs.build_nixos }}
 
             Included Templates:
             ${{ join(fromJson(needs.setup.outputs.templates), ', ') }}
