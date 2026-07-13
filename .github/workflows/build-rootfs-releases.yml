@@ -1,9 +1,6 @@
 name: Build and Release Droidspaces RootFS
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
     inputs:
       update_json_only:
@@ -92,8 +89,6 @@ on:
         description: 'nosnap：移除 Ubuntu Snap'
         type: boolean
         default: false
-  schedule:
-    - cron: '0 0 * * 0'
 
 jobs:
   setup:
@@ -113,10 +108,6 @@ jobs:
         run: |
           TARGET="${{ github.event.inputs.build_target || 'all' }}"
           BUILD_NIXOS="${{ github.event.inputs.build_nixos || 'false' }}"
-          if [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
-            TARGET="all"
-            BUILD_NIXOS="true"
-          fi
 
           if [ "$TARGET" = "all" ] || [ -z "$TARGET" ]; then
             TEMPLATES=$(ls *.Dockerfile | sed 's/\.Dockerfile//' | jq -R -s -c 'split("\n")[:-1]')
@@ -192,7 +183,7 @@ jobs:
           retention-days: 1
 
   build-nixos:
-    if: ${{ github.event.inputs.update_json_only != 'true' && (needs.setup.outputs.build_nixos == 'true' || github.event_name != 'workflow_dispatch') }}
+    if: ${{ github.event.inputs.update_json_only != 'true' && needs.setup.outputs.build_nixos == 'true' }}
     needs: setup
     runs-on: ubuntu-24.04-arm
     strategy:
