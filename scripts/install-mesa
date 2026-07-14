@@ -14,12 +14,13 @@ fi
 echo "--> [mesa] resolving download URL..."
 
 # Extract first browser_download_url whose filename matches the given arch suffix.
+# Must not fail when there is no match (set -e + pipefail).
 pick_url() {
   local json="$1"
   local suffix="$2"
   printf '%s' "$json" \
-    | grep -oE "https://[^\"]+/mesa-for-android-container_[^\"]*_${suffix}\\.tar\\.gz" \
-    | head -1
+    | grep -oE -m1 "https://[^\"]+/mesa-for-android-container_[^\"]*_${suffix}\\.tar\\.gz" \
+    || true
 }
 
 has_assets() {
@@ -33,10 +34,13 @@ LIST=""
 
 LATEST=$(curl -fsSL "${AUTH_HEADER[@]}" "${API}/releases/latest" 2>/dev/null || true)
 if has_assets "$LATEST"; then
+  echo "--> [mesa] got latest release metadata"
   URL=$(pick_url "$LATEST" "ubuntu_jammy_arm64")
   if [ -z "$URL" ]; then
     URL=$(pick_url "$LATEST" "ubuntu_noble_arm64")
   fi
+else
+  echo "--> [mesa] latest release API empty or rate-limited"
 fi
 
 if [ -z "$URL" ]; then
